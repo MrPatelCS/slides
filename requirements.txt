@@ -1,4 +1,8 @@
 streamlit
 google-genai
 python-pptx
-Pillow
+pillow
+huggingface-hub
+kokoro-onnx
+soundfile
+numpy
