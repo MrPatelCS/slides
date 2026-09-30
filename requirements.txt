@@ -2,7 +2,8 @@ streamlit
 google-genai
 python-pptx
 pillow
-huggingface-hub
 kokoro-onnx
 soundfile
 numpy
+pandas
+openpyxl

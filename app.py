@@ -11,6 +11,9 @@ import streamlit as st
 import soundfile as sf
 import numpy as np
 from kokoro_onnx import Kokoro
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 # Page configuration
 st.set_page_config(page_title="Teacher Toolkit", layout="centered")
@@ -43,8 +46,23 @@ model_path, voices_path = load_kokoro_files()
 
 st.title("Teacher Toolkit")
 
+# --- SIDEBAR: API KEY ---
+default_key = ""
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        default_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    pass
+
+if st.session_state.get("gemini_api_key_v5") != default_key and default_key:
+    st.session_state["gemini_api_key_v5"] = default_key
+
+api_key_input = st.sidebar.text_input(
+    "Enter Gemini API Key:", type="password", key="gemini_api_key_v5"
+)
+
 # --- NAVIGATION TABS ---
-tab_slides, tab_tts, tab_dialogue = st.tabs(["Slide Maker", "Text-to-Speech", "Dialogue Maker"])
+tab_slides, tab_tts, tab_dialogue, tab_workflow = st.tabs(["Slide Maker", "Text-to-Speech", "Dialogue Maker", "Workflow Planner"])
 
 # =========================================================================
 # TAB 1: SLIDE GENERATOR
@@ -52,18 +70,17 @@ tab_slides, tab_tts, tab_dialogue = st.tabs(["Slide Maker", "Text-to-Speech", "D
 with tab_slides:
     st.subheader("Slide Generator")
 
-    default_key = ""
-    try:
-        if "GEMINI_API_KEY" in st.secrets:
-            default_key = st.secrets["GEMINI_API_KEY"]
-    except Exception:
-        pass
-
-    if st.session_state.get("gemini_api_key_v5") != default_key and default_key:
-        st.session_state["gemini_api_key_v5"] = default_key
-
-    api_key_input = st.sidebar.text_input(
-        "Enter Gemini API Key:", type="password", key="gemini_api_key_v5"
+    selected_standard = st.selectbox(
+        "Select Standards to Follow:",
+        [
+            "New York Common Core",
+            "California Common Core",
+            "Cambridge",
+            "UK National Curriculum"
+        ],
+        index=0,
+        key="slides_standard",
+        help="This standard will be applied to guide all generated content across tools."
     )
 
     def get_balanced_font_size(text):
@@ -155,11 +172,12 @@ with tab_slides:
         elif generation_mode == "Files + Instructions" and not uploaded_files:
             st.warning("Please upload at least one file (PDF or image) first!")
         else:
-            with st.spinner(f"Generating slides"):
+            with st.spinner(f"Generating slides aligned with {selected_standard}..."):
                 try:
                     client = genai.Client(api_key=api_key_input.strip())
                     base_prompt = f"""
-                        You are an expert curriculum designer creating a projector-ready, student-facing slide deck optimized for a **{lesson_type}** lesson format. 
+                        You are an expert curriculum designer creating a projector-ready, student-facing slide deck optimized for a **{lesson_type}** lesson format.
+                        All content, competencies, and terminology must strictly align with the **{selected_standard}** framework.
                         Return your response strictly as a valid JSON object with the following exact keys:
                         - "subject": The subject name, e.g. English Language Arts or Computer Science
                         - "topic": The complete unit and lesson topic name
@@ -286,12 +304,12 @@ with tab_slides:
                             output_path = "Lesson.pptx"
                             prs.save(output_path)
 
-                            st.success(f"Presentation generated successfully")
+                            st.success(f"Presentation generated successfully under {selected_standard}")
                             with open(output_path, "rb") as f:
                                 st.download_button(
                                     label="Download Presentation (.pptx)",
                                     data=f,
-                                    file_name=f"change_me.pptx",
+                                    file_name="Lesson.pptx",
                                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                                 )
 
@@ -369,7 +387,20 @@ with tab_tts:
 # =========================================================================
 with tab_dialogue:
     st.subheader("Dialogue Maker")
-    st.write("Generate interactive multi-speaker conversation transcripts, custom voice pairings, and grade-aligned worksheets.")
+    
+    selected_standard_dialogue = st.selectbox(
+        "Select Standards to Follow:",
+        [
+            "New York Common Core",
+            "California Common Core",
+            "Cambridge",
+            "UK National Curriculum"
+        ],
+        index=0,
+        key="dialogue_standard",
+    )
+    
+    st.write(f"Generate interactive multi-speaker conversation transcripts aligned with **{selected_standard_dialogue}**, custom voice pairings, and grade-aligned worksheets.")
 
     with st.form("dialogue_form"):
         dialogue_topic = st.text_input(
@@ -413,13 +444,14 @@ with tab_dialogue:
         elif not dialogue_topic.strip():
             st.warning("Please enter a dialogue topic or scenario first!")
         else:
-            with st.spinner("Generating dialogue overview & script"):
+            with st.spinner("Generating dialogue overview & script..."):
                 try:
                     client = genai.Client(api_key=api_key_input.strip())
                     
                     dialogue_prompt = f"""
                     You are an expert audio curriculum producer and scriptwriter. Create a realistic multi-person podcast or conversational dialogue transcript based on the following criteria:
                     - Topic: {dialogue_topic}
+                    - Standards Framework: {selected_standard_dialogue}
                     - Speakers: {speaker_names_input} ({num_speakers} speakers total)
                     - Target Length: {target_duration}
                     - Tone / Level: {dialogue_tone}
@@ -458,6 +490,7 @@ with tab_dialogue:
                         st.session_state["last_dialogue_data"] = dialogue_data
                         st.session_state["last_dialogue_level"] = dialogue_tone
                         st.session_state["last_dialogue_topic"] = dialogue_topic
+                        st.session_state["last_dialogue_standard"] = selected_standard_dialogue
                         
                         extracted_speakers = []
                         for turn in dialogue_data.get("transcript", []):
@@ -473,14 +506,15 @@ with tab_dialogue:
 
     if "last_dialogue_data" in st.session_state:
         dialogue_data = st.session_state["last_dialogue_data"]
+        curr_std = st.session_state.get("last_dialogue_standard", "Standard")
         
         st.markdown(f"### 🎙️ {dialogue_data.get('title', 'Audio Overview')}")
-        st.caption(f"**Context:** {dialogue_data.get('setting', 'N/A')}")
+        st.caption(f"**Context:** {dialogue_data.get('setting', 'N/A')} | **Standard:** {curr_std}")
         st.divider()
 
         transcript_lines = dialogue_data.get("transcript", [])
         
-        full_script_text = f"Title: {dialogue_data.get('title')}\nSetting: {dialogue_data.get('setting')}\n\n"
+        full_script_text = f"Title: {dialogue_data.get('title')}\nSetting: {dialogue_data.get('setting')}\nStandard: {curr_std}\n\n"
         for turn in transcript_lines:
             speaker = turn.get("speaker", "Unknown")
             line = turn.get("line", "")
@@ -515,7 +549,7 @@ with tab_dialogue:
                 speaker_voice_mapping[spk] = available_voice_options[chosen_label]
 
         if st.button("Synthesize & Play Audio Overview", key="synthesize_audio_btn"):
-            with st.spinner("Synthesizing multi-speaker audio"):
+            with st.spinner("Synthesizing multi-speaker audio..."):
                 try:
                     kokoro = Kokoro(model_path, voices_path)
                     combined_samples = []
@@ -571,32 +605,26 @@ with tab_dialogue:
         st.divider()
 
         st.subheader("📝 Worksheet Creator")
-        st.write("Generate 5 comprehension questions and model answers")
+        st.write(f"Generate 5 comprehension questions and model answers aligned with **{curr_std}** based on the generated dialogue script.")
 
         if st.button("Generate 5-Question Worksheet", key="generate_worksheet_btn"):
-            with st.spinner("Designing grade-appropriate worksheet questions and model answers..."):
+            with st.spinner("Generating worksheet questions and answers..."):
                 try:
                     client = genai.Client(api_key=api_key_input.strip())
-                    
                     worksheet_prompt = f"""
-                    You are an expert educator. Based on the following dialogue transcript, create exactly 5 comprehension or critical-thinking questions with corresponding model answers.
-                    CRITICAL REQUIREMENT: The difficulty, vocabulary, and cognitive complexity of the questions and answers must be perfectly calibrated for the following academic level/tone: "{st.session_state.get('last_dialogue_level', 'Academic Discussion')}".
-
-                    Dialogue Topic: {st.session_state.get('last_dialogue_topic', '')}
+                    You are an expert educator adhering to the **{curr_std}** framework. Based on the following dialogue transcript, create a 5-question student worksheet including comprehension questions and a corresponding teacher answer key.
+                    
+                    Topic: {st.session_state.get('last_dialogue_topic', '')}
+                    Level: {st.session_state.get('last_dialogue_level', '')}
+                    Standards Framework: {curr_std}
+                    
                     Transcript:
                     {full_script_text}
-
-                    Return your response strictly as a valid JSON object with the exact following structure:
-                    {{
-                        "worksheet_title": "Title for the worksheet",
-                        "questions": [
-                            {{
-                                "number": 1,
-                                "question": "The question text tailored to the grade level",
-                                "model_answer": "The comprehensive model answer"
-                            }}
-                        ]
-                    }}
+                    
+                    Return your response in clean Markdown format with:
+                    1. Worksheet Title & Instructions
+                    2. 5 Student Questions (mix of short-answer and critical thinking matching {curr_std})
+                    3. A separate Teacher Answer Key section with model responses.
                     """
 
                     ws_response = client.models.generate_content(
@@ -605,43 +633,284 @@ with tab_dialogue:
                     )
 
                     if ws_response and ws_response.text:
-                        raw_ws = ws_response.text.strip()
-                        if raw_ws.startswith("```json"):
-                            raw_ws = raw_ws[7:]
-                        if raw_ws.endswith("```"):
-                            raw_ws = raw_ws[:-3]
-                        raw_ws = raw_ws.strip()
-
-                        ws_data = json.loads(raw_ws)
-                        st.session_state["last_worksheet_data"] = ws_data
-                        st.success("Worksheet generated successfully!")
+                        st.markdown("### 📄 Generated Student Worksheet & Answer Key")
+                        st.markdown(ws_response.text)
+                        
+                        st.download_button(
+                            label="Download Worksheet (.txt)",
+                            data=ws_response.text,
+                            file_name="lesson_worksheet.txt",
+                            mime="text/plain",
+                            key="download_worksheet_txt"
+                        )
                     else:
                         st.error("Failed to generate worksheet. Please try again.")
-
                 except Exception as ws_err:
-                    st.error(f"Error generating worksheet: {ws_err}")
+                    st.error(f"Worksheet generation error: {ws_err}")
 
-        if "last_worksheet_data" in st.session_state:
-            ws = st.session_state["last_worksheet_data"]
-            st.markdown(f"#### 📄 {ws.get('worksheet_title', 'Comprehension Worksheet')}")
-            
-            worksheet_download_text = f"Worksheet: {ws.get('worksheet_title')}\n\n"
-            
-            for q in ws.get("questions", []):
-                q_num = q.get("number")
-                q_text = q.get("question")
-                a_text = q.get("model_answer")
-                
-                st.markdown(f"**Q{q_num}:** {q_text}")
-                st.markdown(f"> **Model Answer:** {a_text}")
-                st.markdown("")
-                
-                worksheet_download_text += f"Q{q_num}: {q_text}\nModel Answer: {a_text}\n\n"
+# =========================================================================
+# TAB 4: WORKFLOW PLANNER (Curriculum & Multi-Session Splitter)
+# =========================================================================
+with tab_workflow:
+    st.subheader("Workflow & Curriculum Planner")
+    st.markdown("Design multi-session units with distributed 5-E Framework pacing tailored to your exact lesson count, outputting directly into a cell-by-cell template.")
 
-            st.download_button(
-                label="Download Worksheet & Answer Key (.txt)",
-                data=worksheet_download_text,
-                file_name="dialogue_worksheet.txt",
-                mime="text/plain",
-                key="download_worksheet_txt"
+    with st.form("workflow_form"):
+        st.markdown("### Unit Parameters")
+
+        framework_option = st.selectbox(
+            "Curriculum Framework",
+            [
+                "New York Common Core",
+                "California State Standards",
+                "NGSS",
+                "UK National Curriculum",
+                "IB PYP/MYP",
+            ],
+            key="wf_framework"
+        )
+
+        col_input1, col_input2 = st.columns(2)
+
+        with col_input1:
+            subject_choice = st.selectbox(
+                "Subject",
+                [
+                    "Computer Science",
+                    "English Language Arts",
+                    "Mathematics",
+                    "Science",
+                    "History / Social Studies",
+                    "Art / Technology",
+                    "Other (Custom)",
+                ],
             )
+            if subject_choice == "Other (Custom)":
+                subject_custom = st.text_input("Enter Custom Subject")
+                final_subject = subject_custom if subject_custom else "General Subject"
+            else:
+                final_subject = subject_choice
+
+        with col_input2:
+            grade_level = st.selectbox(
+                "Grade Level",
+                [f"Grade {i}" for i in range(1, 13)],
+                index=7,
+            )
+
+        col_input3, col_input4 = st.columns(2)
+        with col_input3:
+            num_sessions = st.slider(
+                "Number of Sessions", min_value=1, max_value=10, value=2
+            )
+        with col_input4:
+            session_duration = st.selectbox(
+                "Session Duration", ["40 Minutes", "45 Minutes", "60 Minutes"]
+            )
+
+        topic_input = st.text_input(
+            "Topic / Core Concept",
+            placeholder="e.g., while loops in python, fractions, context clues",
+        )
+        custom_notes = st.text_area(
+            "Optional Context / Custom Notes",
+            placeholder="Add any specific textbook references, or extra requirements.",
+        )
+
+        wf_submitted = st.form_submit_button("Generate Multi-Session Unit Plan", type="primary")
+
+    if wf_submitted:
+        if not api_key_input.strip():
+            st.error("Please enter your Gemini API Key in the sidebar first!")
+        elif not topic_input.strip():
+            st.warning("Please provide a topic or core concept.")
+        else:
+            with st.spinner("Generating structured cell-by-cell unit plan..."):
+                try:
+                    client = genai.Client(api_key=api_key_input.strip())
+
+                    prompt = f"""
+                    You are an expert curriculum designer and teacher. Create a multi-session unit plan for {final_subject}, {grade_level}, covering the topic: "{topic_input}".
+                    The curriculum framework to follow is: {framework_option}.
+                    The unit must consist of exactly {num_sessions} session(s). Each session duration is {session_duration}.
+                    Additional notes: {custom_notes}.
+
+                    For EACH session, provide the output strictly as a JSON list of objects matching this exact structure:
+                    [
+                      {{
+                        "session_number": 1,
+                        "total_sessions": {num_sessions},
+                        "standard": "Relevant standard code and description according to {framework_option}",
+                        "learning_focus": "Clear 'I can...' statement and learning objective",
+                        "engage_time": "5 min",
+                        "engage_desc": "Hook description and opening question",
+                        "explore_time": "7 min",
+                        "explore_desc": "Hands-on exploration or investigation activity",
+                        "explain_time": "10 min",
+                        "explain_desc": "Direct instruction or concept deep-dive",
+                        "elaborate_time": "12 min",
+                        "elaborate_desc": "Application or coding/practice challenge",
+                        "evaluate_time": "6 min",
+                        "evaluate_desc": "Exit ticket or formative assessment task",
+                        "textbook": "Textbook chapter or reference info",
+                        "resources": "Required materials, videos, or worksheets",
+                        "evidence_exit_task": "Formative evidence collected / Exit ticket summary",
+                        "support_extension": "Support scaffolding + Extension challenge",
+                        "adjustment_next_step": "Notes for differentiation or pacing changes"
+                      }}
+                    ]
+                    Return ONLY valid JSON with no extra markdown formatting or backticks if possible, or standard JSON inside ```json tags.
+                    """
+
+                    response = client.models.generate_content(
+                        model="gemini-3.1-flash-lite",
+                        contents=prompt,
+                    )
+
+                    raw_text = response.text.strip()
+                    if raw_text.startswith("```json"):
+                        raw_text = raw_text[7:]
+                    if raw_text.endswith("```"):
+                        raw_text = raw_text[:-3]
+
+                    unit_data = json.loads(raw_text.strip())
+                    st.session_state["unit_data"] = unit_data
+                    st.session_state["wf_subject_val"] = final_subject
+                    st.session_state["wf_grade_val"] = grade_level
+                    st.success("Multi-session unit plan generated successfully!")
+
+                except Exception as e:
+                    st.error(f"Error generating unit plan: {e}")
+
+    if "unit_data" in st.session_state:
+        st.markdown("---")
+        st.subheader("Unit Plan Preview (Cell Structure Mimic)")
+
+        sessions = st.session_state["unit_data"]
+        f_subj = st.session_state.get("wf_subject_val", "Subject")
+        f_grade = st.session_state.get("wf_grade_val", "Grade")
+
+        for idx, s in enumerate(sessions):
+            with st.container():
+                st.markdown(
+                    f"**Week 1 | Unit: {f_subj} ({f_grade}) | Session {s.get('session_number', idx+1)} of {len(sessions)}**"
+                )
+
+                col_s1, col_s2, col_s3 = st.columns([1, 2, 3])
+                with col_s1:
+                    st.info(f"**Session**\n\nSession {s.get('session_number', idx+1)} of {len(sessions)}")
+                with col_s2:
+                    st.info(f"**Standard(s)**\n\n{s.get('standard', '')}")
+                with col_s3:
+                    st.info(f"**Learning Focus**\n\n{s.get('learning_focus', '')}")
+
+                st.markdown("##### 5-E Instructional Pacing")
+                e_cols = st.columns(5)
+                phases = [
+                    ("Engage", s.get("engage_time", ""), s.get("engage_desc", "")),
+                    ("Explore", s.get("explore_time", ""), s.get("explore_desc", "")),
+                    ("Explain", s.get("explain_time", ""), s.get("explain_desc", "")),
+                    ("Elaborate", s.get("elaborate_time", ""), s.get("elaborate_desc", "")),
+                    ("Evaluate", s.get("evaluate_time", ""), s.get("evaluate_desc", "")),
+                ]
+                for col, (p_name, p_time, p_desc) in zip(e_cols, phases):
+                    with col:
+                        st.markdown(
+                            f"""
+                            <div style="border: 1px solid #333; padding: 8px; border-radius: 4px; background-color: #1e1e1e; min-height: 140px;">
+                                <b style="color: #4CAF50;">{p_name}</b><br>
+                                <span style="font-size: 0.8em; color: #aaa;">Time: {p_time}</span><hr style="margin: 4px 0;">
+                                <span style="font-size: 0.85em;">{p_desc}</span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                r_cols = st.columns(5)
+                details = [
+                    ("Textbook", s.get("textbook", "")),
+                    ("Resources", s.get("resources", "")),
+                    ("Evidence / Exit Task", s.get("evidence_exit_task", "")),
+                    ("Support / Extension", s.get("support_extension", "")),
+                    ("Adjustment / Next Step", s.get("adjustment_next_step", "")),
+                ]
+                for col, (d_title, d_val) in zip(r_cols, details):
+                    with col:
+                        st.markdown(
+                            f"""
+                            <div style="border: 1px solid #333; padding: 6px; border-radius: 4px; background-color: #161616; min-height: 100px;">
+                                <span style="font-size: 0.8em; color: #888;"><b>{d_title}</b></span><br>
+                                <span style="font-size: 0.8em;">{d_val}</span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                st.markdown("<br>", unsafe_allow_html=True)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Curriculum Unit Plan"
+
+        current_row = 1
+        for s in sessions:
+            ws.cell(row=current_row, column=1, value=f"Session {s.get('session_number')} of {len(sessions)}")
+            ws.cell(row=current_row, column=2, value="Standard(s)")
+            ws.cell(row=current_row, column=3, value="Learning Focus")
+            current_row += 1
+
+            ws.cell(row=current_row, column=1, value=f"Session {s.get('session_number')}")
+            ws.cell(row=current_row, column=2, value=s.get("standard", ""))
+            ws.cell(row=current_row, column=3, value=s.get("learning_focus", ""))
+            current_row += 1
+
+            phases_headers = ["Engage", "Explore", "Explain", "Elaborate", "Evaluate"]
+            for col_idx, ph in enumerate(phases_headers, start=1):
+                ws.cell(row=current_row, column=col_idx, value=ph)
+            current_row += 1
+
+            phase_vals = [
+                f"Time: {s.get('engage_time')}\n{s.get('engage_desc')}",
+                f"Time: {s.get('explore_time')}\n{s.get('explore_desc')}",
+                f"Time: {s.get('explain_time')}\n{s.get('explain_desc')}",
+                f"Time: {s.get('elaborate_time')}\n{s.get('elaborate_desc')}",
+                f"Time: {s.get('evaluate_time')}\n{s.get('evaluate_desc')}",
+            ]
+            for col_idx, pval in enumerate(phase_vals, start=1):
+                cell = ws.cell(row=current_row, column=col_idx, value=pval)
+                cell.alignment = Alignment(wrap_text=True)
+            current_row += 1
+
+            detail_headers = [
+                "Textbook",
+                "Resources",
+                "Evidence / Exit Task",
+                "Support / Extension",
+                "Adjustment / Next Step",
+            ]
+            for col_idx, dh in enumerate(detail_headers, start=1):
+                ws.cell(row=current_row, column=col_idx, value=dh)
+            current_row += 1
+
+            detail_vals = [
+                s.get("textbook", ""),
+                s.get("resources", ""),
+                s.get("evidence_exit_task", ""),
+                s.get("support_extension", ""),
+                s.get("adjustment_next_step", ""),
+            ]
+            for col_idx, dval in enumerate(detail_vals, start=1):
+                cell = ws.cell(row=current_row, column=col_idx, value=dval)
+                cell.alignment = Alignment(wrap_text=True)
+            current_row += 2
+
+        excel_buffer = io.BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+
+        st.download_button(
+            label="Download Complete Unit Plan (.xlsx)",
+            data=excel_buffer,
+            file_name=f"{f_subj}_{f_grade}_Unit_Plan.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
