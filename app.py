@@ -2,6 +2,7 @@ import io
 import json
 import os
 import urllib.request
+import zipfile
 from google import genai
 from PIL import Image, ImageDraw
 from pptx import Presentation
@@ -14,6 +15,7 @@ from kokoro_onnx import Kokoro
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from docx import Document
 
 # Page configuration
 st.set_page_config(page_title="Teacher Toolkit", layout="centered")
@@ -61,14 +63,18 @@ api_key_input = st.sidebar.text_input(
     "Enter Gemini API Key:", type="password", key="gemini_api_key_v5"
 )
 
+# Initialize Session State History
+if "lesson_history" not in st.session_state:
+    st.session_state.lesson_history = []
+
 # --- NAVIGATION TABS ---
 tab_slides, tab_tts, tab_dialogue, tab_workflow = st.tabs(["Slide Maker", "Text-to-Speech", "Dialogue Maker", "Workflow Planner"])
 
 # =========================================================================
-# TAB 1: SLIDE GENERATOR
+# TAB 1: SLIDE GENERATOR & LESSON PLAN BUILDER
 # =========================================================================
 with tab_slides:
-    st.subheader("Slide Generator")
+    st.subheader("Slide & Lesson Plan Generator")
 
     selected_standard = st.selectbox(
         "Select Standards to Follow:",
@@ -86,13 +92,13 @@ with tab_slides:
     def get_balanced_font_size(text):
         length = len(text)
         if length < 60:
-            return Pt(28)
+            return Pt(40)
         elif length < 150:
-            return Pt(22)
+            return Pt(30)
         elif length < 350:
-            return Pt(18)
+            return Pt(26)
         else:
-            return Pt(14)
+            return Pt(22)
 
     def create_dual_coding_icon(phase_name):
         img = Image.new("RGBA", (180, 180), (255, 255, 255, 0))
@@ -162,7 +168,7 @@ with tab_slides:
             p_independent_practice = st.text_input("independent_practice", "The actual complete practice task, writing prompt, or exercise for students to solve independently.")
             p_exit_task = st.text_input("exit_task", "A final student-facing reflection or check-for-understanding prompt.")
 
-        submitted = st.form_submit_button("Generate Slides")
+        submitted = st.form_submit_button("Generate Slides & Lesson Plan")
 
     if submitted:
         if not api_key_input.strip():
@@ -172,15 +178,23 @@ with tab_slides:
         elif generation_mode == "Files + Instructions" and not uploaded_files:
             st.warning("Please upload at least one file (PDF or image) first!")
         else:
-            with st.spinner(f"Generating slides aligned with {selected_standard}..."):
+            with st.spinner(f"Generating presentation and lesson plan aligned with {selected_standard}..."):
                 try:
                     client = genai.Client(api_key=api_key_input.strip())
                     base_prompt = f"""
-                        You are an expert curriculum designer creating a projector-ready, student-facing slide deck optimized for a **{lesson_type}** lesson format.
+                        You are an expert curriculum designer creating projector-ready student slides and a comprehensive teacher lesson plan optimized for a **{lesson_type}** lesson format.
                         All content, competencies, and terminology must strictly align with the **{selected_standard}** framework.
                         Return your response strictly as a valid JSON object with the following exact keys:
                         - "subject": The subject name, e.g. English Language Arts or Computer Science
                         - "topic": The complete unit and lesson topic name
+                        - "standards": Specific standard reference code and description aligned with {selected_standard}
+                        - "teaching_guidance": Prior learning, key misconceptions, and instructor notes
+                        - "support_extension": Language scaffolds, ILP adjustments, and student challenge prompts
+                        - "saudi_values": Relevant value or principle and how students will demonstrate it in class
+                        - "textbook_resources": Recommended pages, materials, equipment, and digital links
+                        - "safety_safeguarding": Lesson-specific safety actions or safeguarding considerations
+                        - "homework": Extension task and due date
+                        - "adjustment_next_step": Post-teaching reflection and follow-up tracker notes
                         - "do_now": {p_do_now}
                         - "learning_focus": {p_learning_focus}
                         - "activity_title": {p_activity_title}
@@ -191,8 +205,8 @@ with tab_slides:
                         - "independent_practice": {p_independent_practice}
                         - "exit_task": {p_exit_task}
                         CRITICAL RULES:
-                        1. STRICTLY STUDENT-FACING: Never write teacher meta-instructions. Write everything directly as text for students.
-                        2. NO EMPTY VALUES: Fill out every field with rich, complete content tailored to a {lesson_type} pedagogical approach.
+                        1. STRICTLY STUDENT-FACING FOR SLIDES: Ensure slide components are clear for learners.
+                        2. NO EMPTY VALUES: Fill out every single field comprehensively with rich pedagogical content.
                         """
 
                     if generation_mode == "Text Only":
@@ -231,7 +245,9 @@ with tab_slides:
                         st.json(deck_data)
 
                         template_path = "template.pptx"
+                        doc_template_path = "RSMC_template.docx"
 
+                        # 1. Generate PowerPoint
                         if not os.path.exists(template_path):
                             st.error(f"Template not found at path: {template_path}. Please include 'template.pptx' in your repository.")
                         else:
@@ -242,15 +258,21 @@ with tab_slides:
                                     formatted_lines = []
                                     for item in val:
                                         if isinstance(item, dict):
-                                            for k, v in item.items():
-                                                formatted_lines.append(f"• **{k}**: {v}")
+                                            # If Gemini returns structured dicts, format them cleanly as Term: Definition
+                                            term = item.get("term", "")
+                                            defn = item.get("definition", "")
+                                            if term and defn:
+                                                formatted_lines.append(f"• {term}: {defn}")
+                                            else:
+                                                for k, v in item.items():
+                                                    formatted_lines.append(f"• {k}: {v}")
                                         else:
                                             formatted_lines.append(f"• {item}")
                                     return "\n".join(formatted_lines)
                                 elif isinstance(val, dict):
                                     formatted_lines = []
                                     for k, v in val.items():
-                                        formatted_lines.append(f"• **{k}**: {v}")
+                                        formatted_lines.append(f"• {k}: {v}")
                                     return "\n".join(formatted_lines)
                                 return str(val)
 
@@ -304,17 +326,164 @@ with tab_slides:
                             output_path = "Lesson.pptx"
                             prs.save(output_path)
 
-                            st.success(f"Presentation generated successfully under {selected_standard}")
-                            with open(output_path, "rb") as f:
-                                st.download_button(
-                                    label="Download Presentation (.pptx)",
-                                    data=f,
-                                    file_name="Lesson.pptx",
-                                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                                )
+                        # 2. Generate Corresponding Word Lesson Plan (`Lesson_Plan.docx`)
+                        doc_output_path = "Lesson_Plan.docx"
+                        if os.path.exists(doc_template_path):
+                            doc = Document(doc_template_path)
+                            
+                            # Helper map to fill text inside Word tables/paragraphs safely
+                            fill_mapping = {
+                                "subject": deck_data.get("subject", ""),
+                                "topic": deck_data.get("topic", ""),
+                                "standards": deck_data.get("standards", ""),
+                                "learning_focus": deck_data.get("learning_focus", ""),
+                                "teaching_guidance": deck_data.get("teaching_guidance", ""),
+                                "support_extension": deck_data.get("support_extension", ""),
+                                "saudi_values": deck_data.get("saudi_values", ""),
+                                "textbook_resources": deck_data.get("textbook_resources", ""),
+                                "safety_safeguarding": deck_data.get("safety_safeguarding", ""),
+                                "homework": deck_data.get("homework", ""),
+                                "adjustment_next_step": deck_data.get("adjustment_next_step", "")
+                            }
+
+                            # Safely replace table cells based on matching row labels
+                            for table in doc.tables:
+                                for row in table.rows:
+                                    for idx, cell in enumerate(row.cells):
+                                        cell_text = cell.text.strip().lower()
+                                        
+                                        if idx + 1 < len(row.cells):
+                                            next_cell = row.cells[idx + 1]
+                                            
+                                            if "subject" in cell_text and "teacher" not in cell_text:
+                                                next_cell.text = deck_data.get("subject", "")
+                                            elif "unit and lesson" in cell_text or "topic" in cell_text:
+                                                next_cell.text = deck_data.get("topic", "")
+                                            elif "standard" in cell_text:
+                                                next_cell.text = deck_data.get("standards", "")
+                                            elif "learning focus" in cell_text:
+                                                next_cell.text = deck_data.get("learning_focus", "")
+                                            elif "teaching guidance" in cell_text:
+                                                next_cell.text = deck_data.get("teaching_guidance", "")
+                                            elif "support" in cell_text or "extension" in cell_text:
+                                                next_cell.text = deck_data.get("support_extension", "")
+                                            elif "saudi values" in cell_text:
+                                                next_cell.text = deck_data.get("saudi_values", "")
+                                            elif "textbook" in cell_text or "resources" in cell_text:
+                                                next_cell.text = deck_data.get("textbook_resources", "")
+                                            elif "safety" in cell_text or "safeguarding" in cell_text:
+                                                next_cell.text = deck_data.get("safety_safeguarding", "")
+                                            elif "homework" in cell_text:
+                                                next_cell.text = deck_data.get("homework", "")
+                                            elif "adjustment" in cell_text or "next step" in cell_text:
+                                                next_cell.text = deck_data.get("adjustment_next_step", "")
+
+                            # 3. Populate the 5Es Lesson Sequence Table (Professionally rephrased for Lesson Plan style)
+                            for table in doc.tables:
+                                if len(table.rows) > 0 and any("5e" in cell.text.lower() for cell in table.rows[0].cells):
+                                    sequence_rows = [
+                                        ("5 mins", "Engage", f"Warm-up & Introduction:\n• Students tackle the initial prompt: {deck_data.get('do_now', '')}\n• Introduction of the core learning objective: {deck_data.get('learning_focus', '')}", "Verbal formative feedback & initial engagement check"),
+                                        ("5 mins", "Explore", f"Exploration Activity:\n• Student-led investigation focusing on: {deck_data.get('activity_title', '')}", "Teacher observation & peer collaboration tracking"),
+                                        ("10 mins", "Explain", f"Direct Instruction & Core Concepts:\n• Conceptual breakdown: {deck_data.get('new_learning', '')}\n• Key terminology introduced: {deck_data.get('vocabulary', '')}\n• Teacher modeling demonstration: {deck_data.get('modeling', '')}", "Targeted comprehension questioning"),
+                                        ("12 mins", "Elaborate", f"Guided & Independent Practice:\n• Collaborative task: {deck_data.get('guided_practice', '')}\n• Independent application: {deck_data.get('independent_practice', '')}", "Completed student work output & active scaffolding"),
+                                        ("8 mins", "Evaluate", f"Plenary & Assessment:\n• Final check for understanding: {deck_data.get('exit_task', '')}", "Exit ticket review & mastery assessment")
+                                    ]
+                                    
+                                    for r_idx, (time_val, phase_val, activity_val, evidence_val) in enumerate(sequence_rows):
+                                        if r_idx + 1 < len(table.rows):
+                                            row = table.rows[r_idx + 1]
+                                            cells = row.cells
+                                            if len(cells) >= 4:
+                                                cells[0].text = time_val
+                                                cells[1].text = phase_val
+                                                cells[2].text = activity_val
+                                                cells[3].text = evidence_val
+
+                            doc.save(doc_output_path)
+
+                        # Read generated files into memory bytes for session persistence and ZIP packaging
+                        with open("Lesson.pptx", "rb") as f:
+                            pptx_bytes = f.read()
+                        with open(doc_output_path, "rb") as f:
+                            docx_bytes = f.read()
+
+                        # Build an in-memory ZIP package containing both files
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                            zip_file.writestr("Lesson.pptx", pptx_bytes)
+                            zip_file.writestr("Lesson_Plan.docx", docx_bytes)
+                        zip_bytes = zip_buffer.getvalue()
+
+                        # Save into session state history
+                        lesson_title = deck_data.get("topic", "Generated Lesson")
+                        st.session_state.lesson_history.insert(0, {
+                            "title": lesson_title,
+                            "standard": selected_standard,
+                            "pptx": pptx_bytes,
+                            "docx": docx_bytes,
+                            "zip": zip_bytes
+                        })
+
+                        st.success(f"Presentation and Lesson Plan generated successfully under {selected_standard}!")
 
                 except Exception as e:
                     st.error(f"Error processing generation: {e}")
+
+    # --- PERSISTENT DOWNLOAD & HISTORY SECTION ---
+    if st.session_state.lesson_history:
+        st.markdown("---")
+        st.subheader("📥 Latest Generated Package")
+        latest = st.session_state.lesson_history[0]
+        
+        st.download_button(
+            label="📦 Download Complete Lesson Package (.zip)",
+            data=latest["zip"],
+            file_name="Lesson_Package.zip",
+            mime="application/zip",
+            key="download_latest_zip"
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                label="📄 Download Presentation (.pptx)",
+                data=latest["pptx"],
+                file_name="Lesson.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                key="download_latest_pptx"
+            )
+        with col2:
+            st.download_button(
+                label="📝 Download Lesson Plan (.docx)",
+                data=latest["docx"],
+                file_name="Lesson_Plan.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="download_latest_docx"
+            )
+
+        # Session History Expander
+        with st.expander("📜 Generation History (Session Cache)", expanded=False):
+            st.write("Access previously generated lessons from your active session below:")
+            for idx, hist in enumerate(st.session_state.lesson_history[1:], start=1):
+                st.markdown(f"**{idx}. {hist['title']}** *({hist['standard']})*")
+                h_col1, h_col2 = st.columns(2)
+                with h_col1:
+                    st.download_button(
+                        label=f"PPTX #{idx}",
+                        data=hist["pptx"],
+                        file_name=f"Lesson_{idx}.pptx",
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        key=f"hist_pptx_{idx}"
+                    )
+                with h_col2:
+                    st.download_button(
+                        label=f"DOCX #{idx}",
+                        data=hist["docx"],
+                        file_name=f"Lesson_Plan_{idx}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key=f"hist_docx_{idx}"
+                    )
+                st.markdown("---")
 
 # =========================================================================
 # TAB 2: TEXT-TO-SPEECH (Kokoro Cloud Workspace)

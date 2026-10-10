@@ -7,3 +7,4 @@ soundfile
 numpy
 pandas
 openpyxl
+python-docx
